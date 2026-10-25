@@ -83,8 +83,9 @@ runs:
       id: version
       shell: bash
       run: |
-        version=$(odx --version)
-        echo "version=${version##* }" >> "$GITHUB_OUTPUT"
+        # `odx 0.0.8 (odoo-lint ...)`: the second word.
+        read -r _ version _ <<< "$(odx --version)"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
     - name: Restore the odx cache
       if: inputs.cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
