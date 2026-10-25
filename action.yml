@@ -50,6 +50,7 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
+        WORKDIR: ${{ inputs.working-directory }}
       # uv, pipx or pip, whichever the runner has: GitHub's runners all have
       # pipx, Forgejo's often only Python. The PATH and environment entries
       # come from those tools and the runner, not from inputs.
@@ -62,7 +63,8 @@ runs:
             bin=$(uv tool dir --bin)
           elif command -v pipx >/dev/null; then
             pipx install --force "$spec"
-            bin=$(pipx environment --value PIPX_BIN_DIR)
+            # `environment --value` needs pipx 1.5; distributions ship older.
+            bin=$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "${PIPX_BIN_DIR:-$HOME/.local/bin}")
           else
             python=$(command -v python3 || command -v python)
             PIP_BREAK_SYSTEM_PACKAGES=1 "$python" -m pip install --user --upgrade "$spec"
@@ -79,19 +81,29 @@ runs:
         cache="${ODX_CACHE_DIR:-$RUNNER_TEMP/odx-cache}"
         echo "ODX_CACHE_DIR=$cache" >> "$GITHUB_ENV"
         echo "cache-dir=$cache" >> "$GITHUB_OUTPUT"
+        # hashFiles sees only the workspace; without an odx.lock the run
+        # gets a key of its own, so the cache is not frozen at its first save.
+        lock="$WORKDIR/odx.lock"
+        if [ -f "$lock" ] && hash=$(git hash-object "$lock" 2>/dev/null); then
+          echo "lock-hash=$hash" >> "$GITHUB_OUTPUT"
+        else
+          echo "lock-hash=run-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+        fi
     - name: The odx version
       id: version
       shell: bash
       run: |
-        # `odx 0.0.8 (odoo-lint ...)`: the second word.
-        read -r _ version _ <<< "$(odx --version)"
+        # `odx 0.0.8 (odoo-lint ...)`: the second word. A separate
+        # assignment, so a missing odx fails the step.
+        out=$(odx --version)
+        read -r _ version _ <<< "$out"
         echo "version=$version" >> "$GITHUB_OUTPUT"
     - name: Restore the odx cache
       if: inputs.cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.cache-dir }}
-        key: odx-${{ runner.os }}-${{ hashFiles(format('{0}/odx.lock', inputs.working-directory)) }}
+        key: odx-${{ runner.os }}-${{ steps.install.outputs.lock-hash }}
         restore-keys: odx-${{ runner.os }}-
     - name: odx bot run
       id: bot

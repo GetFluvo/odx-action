@@ -96,7 +96,8 @@ from a secret instead of the app.
 
 odx is installed with uv, pipx or pip, whichever the runner has, and
 `ODX_CACHE_DIR` points at the runner's temporary directory unless the
-workflow sets it.
+workflow sets it. A project with `cache_dir` in `[tool.odx]` uses that
+directory instead, which the action does not cache: set `cache: false` there.
 
 ## License
 
