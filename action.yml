@@ -1,5 +1,5 @@
 name: Setup odx
-description: Install odx, the Odoo project CLI, cache its data and, with `bot`, run the nightly cycle of the upstream dashboard and bot pull requests.
+description: Install odx, the Odoo project CLI, cache its data, and run its nightly bot for upstream updates.
 author: getfluvo
 branding:
   icon: git-merge
