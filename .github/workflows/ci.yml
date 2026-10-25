@@ -1,0 +1,119 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # A new odx release must still install and run the nightly cycle.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        version: [latest, "0.0.7"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: odx
+        uses: $/
+        with:
+          version: ${{ matrix.version }}
+      - name: odx is on PATH, in the version asked for
+        shell: bash
+        env:
+          ASKED: ${{ matrix.version }}
+          GOT: ${{ steps.odx.outputs.version }}
+        run: |
+          odx --version
+          test -n "$GOT"
+          if [ "$ASKED" != latest ]; then test "$GOT" = "$ASKED"; fi
+          test -n "$ODX_CACHE_DIR"
+
+  pip:
+    # A runner with Python only, as Forgejo's often are.
+    runs-on: ubuntu-latest
+    container: python:3.13-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: odx
+        uses: $/
+        with:
+          cache: false
+      - run: odx --version
+
+  bot-cycle:
+    runs-on: ubuntu-latest
+    env:
+      FORGE_PORT: "18765"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: odx
+        uses: $/
+        with:
+          cache: false
+      # The fake forge and the fixture project of the odx release installed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: getfluvo/odx
+          ref: v${{ steps.odx.outputs.version }}
+          path: odx
+          sparse-checkout: |
+            scripts
+            tests/fixtures/bot
+      - name: Start a fake forge and the fixture project
+        run: |
+          python3 odx/scripts/fake_forge.py "$FORGE_PORT" "$RUNNER_TEMP/forge.log" &
+          odx/scripts/bot_cycle.sh "$RUNNER_TEMP/project"
+      - name: The nightly cycle
+        id: first
+        uses: $/
+        with:
+          version: none
+          bot: true
+          apply: true
+          cache: false
+          working-directory: ${{ runner.temp }}/project
+      - name: The same again
+        uses: $/
+        with:
+          version: none
+          bot: true
+          apply: true
+          cache: false
+          working-directory: ${{ runner.temp }}/project
+      - name: One issue created, then nothing written
+        env:
+          ISSUE: ${{ steps.first.outputs.dashboard-issue }}
+        run: |
+          test "$ISSUE" = 1
+          writes=$(grep -cv '^GET ' "$RUNNER_TEMP/forge.log")
+          test "$writes" = 1 || { cat "$RUNNER_TEMP/forge.log"; exit 1; }
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1

@@ -1,0 +1,118 @@
+name: Setup odx
+description: Install odx, the Odoo project CLI, cache its data and, with `bot`, run the nightly cycle of the upstream dashboard and bot pull requests.
+author: getfluvo
+branding:
+  icon: git-merge
+  color: purple
+
+inputs:
+  version:
+    description: The odx release to install (`latest`, or `0.0.8`); `none` uses the odx already on PATH.
+    default: latest
+  cache:
+    description: Restore and save the odx cache, keyed on odx.lock.
+    default: "true"
+  working-directory:
+    description: The project directory.
+    default: "."
+  bot:
+    description: Run `odx bot run`, the nightly cycle (see "Running the bot nightly" in the odx documentation).
+    default: "false"
+  apply:
+    description: "`true`, `false`, or `auto`: apply, except on pull_request events, where the run only plans."
+    default: auto
+  series:
+    description: Only the dashboard of this series, with `bot`.
+    default: ""
+  max-prs:
+    description: Pull requests a run opens at most, with `bot` (default `[tool.odx.bot] max_prs_per_run`, else 10).
+    default: ""
+  remote:
+    description: The git remote of the project repository, with `bot`.
+    default: origin
+
+outputs:
+  version:
+    description: The installed odx version.
+    value: ${{ steps.version.outputs.version }}
+  plan-json:
+    description: The path of the run's JSON (`odx --json bot run`), with `bot`.
+    value: ${{ steps.bot.outputs.plan-json }}
+  dashboard-issue:
+    description: The number of the dashboard issue, with `bot`.
+    value: ${{ steps.bot.outputs.dashboard-issue }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install odx
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      # uv, pipx or pip, whichever the runner has: GitHub's runners all have
+      # pipx, Forgejo's often only Python. The PATH and environment entries
+      # come from those tools and the runner, not from inputs.
+      run: | # zizmor: ignore[github-env]
+        if [ "$VERSION" != none ]; then
+          spec=odx-cli
+          if [ "$VERSION" != latest ]; then spec="odx-cli==${VERSION#v}"; fi
+          if command -v uv >/dev/null; then
+            uv tool install --force "$spec"
+            bin=$(uv tool dir --bin)
+          elif command -v pipx >/dev/null; then
+            pipx install --force "$spec"
+            bin=$(pipx environment --value PIPX_BIN_DIR)
+          else
+            python=$(command -v python3 || command -v python)
+            PIP_BREAK_SYSTEM_PACKAGES=1 "$python" -m pip install --user --upgrade "$spec"
+            base=$("$python" -m site --user-base)
+            bin="$base/bin"
+            if [ "$RUNNER_OS" = Windows ]; then
+              bin="$(dirname "$("$python" -m site --user-site)")/Scripts"
+            fi
+          fi
+          echo "$bin" >> "$GITHUB_PATH"
+        fi
+        # One cache directory on every OS, in a form odx and actions/cache
+        # both read; a directory the workflow chose stays.
+        cache="${ODX_CACHE_DIR:-$RUNNER_TEMP/odx-cache}"
+        echo "ODX_CACHE_DIR=$cache" >> "$GITHUB_ENV"
+        echo "cache-dir=$cache" >> "$GITHUB_OUTPUT"
+    - name: The odx version
+      id: version
+      shell: bash
+      run: |
+        version=$(odx --version)
+        echo "version=${version##* }" >> "$GITHUB_OUTPUT"
+    - name: Restore the odx cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.cache-dir }}
+        key: odx-${{ runner.os }}-${{ hashFiles(format('{0}/odx.lock', inputs.working-directory)) }}
+        restore-keys: odx-${{ runner.os }}-
+    - name: odx bot run
+      id: bot
+      if: inputs.bot == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        APPLY: ${{ inputs.apply }}
+        SERIES: ${{ inputs.series }}
+        MAX_PRS: ${{ inputs.max-prs }}
+        REMOTE: ${{ inputs.remote }}
+        EVENT: ${{ github.event_name }}
+      run: |
+        args=(--json bot run --remote "$REMOTE")
+        if [ "$APPLY" = true ] || { [ "$APPLY" = auto ] && [ "$EVENT" != pull_request ]; }; then
+          args+=(--apply)
+        fi
+        if [ -n "$SERIES" ]; then args+=(--series "$SERIES"); fi
+        if [ -n "$MAX_PRS" ]; then args+=(--max-prs "$MAX_PRS"); fi
+        plan="$RUNNER_TEMP/odx-plan.json"
+        odx "${args[@]}" > "$plan"
+        echo "plan-json=$plan" >> "$GITHUB_OUTPUT"
+        python=$(command -v python3 || command -v python)
+        issue=$("$python" "$GITHUB_ACTION_PATH/scripts/dashboard_issue.py" "$plan")
+        echo "dashboard-issue=$issue" >> "$GITHUB_OUTPUT"
